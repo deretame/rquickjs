@@ -227,12 +227,29 @@ fn main() {
     }
 
     // generating bindings
-    bindgen(
-        out_dir,
-        out_dir.join("quickjs.bind.h"),
-        &defines,
-        bindgen_cflags,
-    );
+    //
+    // When rquickjs-sys is compiled for the host platform (e.g. as part of the
+    // proc-macro dependency chain while cross-compiling to Android), the
+    // surrounding build environment might point LIBCLANG_PATH at a cross-
+    // compilation toolchain such as the Android NDK. That toolchain cannot
+    // generate correct bindings for the host target. In that case, prefer the
+    // bundled binding if one is available.
+    let target = env::var("TARGET").unwrap();
+    let host = env::var("HOST").unwrap();
+    let bundled_binding = Path::new("src")
+        .join("bindings")
+        .join(format!("{}.rs", target));
+    if target == host && bundled_binding.exists() {
+        fs::copy(&bundled_binding, out_dir.join("bindings.rs"))
+            .expect("Unable to copy bundled binding");
+    } else {
+        bindgen(
+            out_dir,
+            out_dir.join("quickjs.bind.h"),
+            &defines,
+            bindgen_cflags,
+        );
+    }
 
     for (name, value) in &defines {
         builder.define(name, *value);
@@ -304,7 +321,27 @@ where
     let out_dir = out_dir.as_ref();
     let header_file = header_file.as_ref();
 
-    let mut cflags = add_cflags;
+    let mut target = env::var("TARGET").unwrap();
+
+    // *-pc-windows-gnullvm is special for Rust, Clang accepts only
+    // *-pc-windows-gnu
+    if target.ends_with("windows-gnullvm") {
+        target = target.replace("llvm", "");
+    }
+
+    // BINDGEN_EXTRA_CLANG_ARGS is often set by the surrounding build script for
+    // the cross-compilation target (e.g. Android). When rquickjs-sys is also
+    // built for the host platform as part of the proc-macro dependency chain,
+    // those flags (especially --sysroot pointing at the Android NDK) must not
+    // be passed to bindgen, otherwise the generated binding matches the cross
+    // target instead of the host target.
+    let mut add_cflags = add_cflags;
+    if !target.contains("android") {
+        add_cflags.clear();
+    }
+
+    let mut cflags = vec![format!("--target={}", target)];
+    cflags.append(&mut add_cflags);
 
     //format!("-I{}", out_dir.parent().display()),
 
